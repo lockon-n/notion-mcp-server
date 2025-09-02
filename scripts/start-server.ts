@@ -11,7 +11,7 @@ import { initProxy, ValidationError } from '../src/init-server.js'
 export async function startServer(args: string[] = process.argv) {
   const filename = fileURLToPath(import.meta.url)
   const directory = path.dirname(filename)
-  const specPath = path.resolve(directory, '../../scripts/notion-openapi.json')
+  const specPath = path.resolve(directory, '../scripts/notion-openapi.json')
   
   const baseUrl = process.env.BASE_URL ?? undefined
 
