@@ -1,34 +1,70 @@
 import { HttpClient } from '../client/http-client.js'
 
 export interface PageAccessControlOptions {
-  pageId?: string
-  pageUrl?: string
+  pageIds?: string[]
+  pageUrls?: string[]
   httpClient: HttpClient
 }
 
 export class PageAccessController {
-  private rootPageId: string | null = null
+  private rootPageIds: Set<string> = new Set()
   private httpClient: HttpClient
   private pageCache = new Map<string, { parentId: string | null; isAllowed: boolean }>()
 
   constructor(options: PageAccessControlOptions) {
     this.httpClient = options.httpClient
-    this.initializeRootPage(options)
+    this.initializeRootPages(options)
   }
 
-  private initializeRootPage(options: PageAccessControlOptions) {
-    // Priority: command line args > environment variables
-    const pageId = options.pageId || process.env.NOTION_ROOT_PAGE_ID
-    const pageUrl = options.pageUrl || process.env.NOTION_ROOT_PAGE_URL
-
-    if (pageId) {
-      this.rootPageId = this.normalizePageId(pageId)
-    } else if (pageUrl) {
-      this.rootPageId = this.extractPageIdFromUrl(pageUrl)
+  private initializeRootPages(options: PageAccessControlOptions) {
+    const allPageIds = new Set<string>()
+    
+    // Process command line/option page IDs
+    if (options.pageIds) {
+      for (const pageId of options.pageIds) {
+        if (pageId.trim()) {
+          allPageIds.add(this.normalizePageId(pageId.trim()))
+        }
+      }
     }
-
-    if (this.rootPageId) {
-      console.log(`Page access control enabled. Root page: ${this.rootPageId}`)
+    
+    // Process command line/option page URLs
+    if (options.pageUrls) {
+      for (const pageUrl of options.pageUrls) {
+        if (pageUrl.trim()) {
+          try {
+            const pageId = this.extractPageIdFromUrl(pageUrl.trim())
+            allPageIds.add(pageId)
+          } catch (error) {
+            console.error(`Invalid page URL: ${pageUrl}`, error)
+          }
+        }
+      }
+    }
+    
+    // Process environment variables as fallback
+    if (allPageIds.size === 0) {
+      const envPageIds = process.env.NOTION_ROOT_PAGE_ID?.split(',').map(id => id.trim()).filter(id => id.length > 0) || []
+      const envPageUrls = process.env.NOTION_ROOT_PAGE_URL?.split(',').map(url => url.trim()).filter(url => url.length > 0) || []
+      
+      for (const pageId of envPageIds) {
+        allPageIds.add(this.normalizePageId(pageId))
+      }
+      
+      for (const pageUrl of envPageUrls) {
+        try {
+          const pageId = this.extractPageIdFromUrl(pageUrl)
+          allPageIds.add(pageId)
+        } catch (error) {
+          console.error(`Invalid page URL from env: ${pageUrl}`, error)
+        }
+      }
+    }
+    
+    this.rootPageIds = allPageIds
+    
+    if (this.rootPageIds.size > 0) {
+      console.log(`Page access control enabled. Root pages: ${Array.from(this.rootPageIds).join(', ')}`)
     }
   }
 
@@ -67,11 +103,11 @@ export class PageAccessController {
    * Check if page access control is enabled
    */
   isEnabled(): boolean {
-    return this.rootPageId !== null
+    return this.rootPageIds.size > 0
   }
 
   /**
-   * Check if a page ID is allowed (is root page or descendant of root page)
+   * Check if a page ID is allowed (is one of the root pages or descendant of any root page)
    */
   async isPageAllowed(pageId: string): Promise<boolean> {
     if (!this.isEnabled()) {
@@ -80,8 +116,8 @@ export class PageAccessController {
 
     const normalizedPageId = this.normalizePageId(pageId)
     
-    // Root page is always allowed
-    if (normalizedPageId === this.rootPageId) {
+    // Check if this is one of the root pages
+    if (this.rootPageIds.has(normalizedPageId)) {
       return true
     }
 
@@ -90,12 +126,12 @@ export class PageAccessController {
       return this.pageCache.get(normalizedPageId)!.isAllowed
     }
 
-    // Traverse up the page hierarchy to find root
+    // Traverse up the page hierarchy to find any root page
     return await this.checkPageHierarchy(normalizedPageId)
   }
 
   /**
-   * Traverse page hierarchy to check if page is descendant of root
+   * Traverse page hierarchy to check if page is descendant of any root page
    */
   private async checkPageHierarchy(pageId: string): Promise<boolean> {
     const visited = new Set<string>()
@@ -104,8 +140,8 @@ export class PageAccessController {
     while (currentPageId && !visited.has(currentPageId)) {
       visited.add(currentPageId)
 
-      // Check if we've reached the root page
-      if (currentPageId === this.rootPageId) {
+      // Check if we've reached any of the root pages
+      if (this.rootPageIds.has(currentPageId)) {
         // Cache all visited pages as allowed
         visited.forEach(id => {
           this.pageCache.set(id, { parentId: null, isAllowed: true })
@@ -129,7 +165,7 @@ export class PageAccessController {
       }
     }
 
-    // Didn't find root page, cache all visited pages as not allowed
+    // Didn't find any root page, cache all visited pages as not allowed
     visited.forEach(id => {
       if (!this.pageCache.has(id)) {
         this.pageCache.set(id, { parentId: null, isAllowed: false })

@@ -25,8 +25,8 @@ type NewToolDefinition = {
 }
 
 export interface MCPProxyOptions {
-  pageId?: string
-  pageUrl?: string
+  pageIds?: string[]
+  pageUrls?: string[]
 }
 
 // import this class, extend and return server
@@ -52,10 +52,10 @@ export class MCPProxy {
     )
 
     // Initialize page access control if needed
-    if (options.pageId || options.pageUrl) {
+    if ((options.pageIds && options.pageIds.length > 0) || (options.pageUrls && options.pageUrls.length > 0)) {
       this.pageAccessController = new PageAccessController({
-        pageId: options.pageId,
-        pageUrl: options.pageUrl,
+        pageIds: options.pageIds || [],
+        pageUrls: options.pageUrls || [],
         httpClient: this.httpClient
       })
     }

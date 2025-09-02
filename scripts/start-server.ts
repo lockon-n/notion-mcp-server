@@ -21,8 +21,8 @@ export async function startServer(args: string[] = process.argv) {
     let transport = 'stdio'; // default
     let port = 3000;
     let authToken: string | undefined;
-    let pageId: string | undefined;
-    let pageUrl: string | undefined;
+    let pageIds: string[] = [];
+    let pageUrls: string[] = [];
 
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--transport' && i + 1 < args.length) {
@@ -35,10 +35,12 @@ export async function startServer(args: string[] = process.argv) {
         authToken = args[i + 1];
         i++; // skip next argument
       } else if (args[i] === '--page-id' && i + 1 < args.length) {
-        pageId = args[i + 1];
+        // Support comma-separated page IDs
+        pageIds = args[i + 1].split(',').map(id => id.trim()).filter(id => id.length > 0);
         i++; // skip next argument
       } else if (args[i] === '--page-url' && i + 1 < args.length) {
-        pageUrl = args[i + 1];
+        // Support comma-separated page URLs
+        pageUrls = args[i + 1].split(',').map(url => url.trim()).filter(url => url.length > 0);
         i++; // skip next argument
       } else if (args[i] === '--help' || args[i] === '-h') {
         console.log(`
@@ -48,30 +50,40 @@ Options:
   --transport <type>     Transport type: 'stdio' or 'http' (default: stdio)
   --port <number>        Port for HTTP server when using Streamable HTTP transport (default: 3000)
   --auth-token <token>   Bearer token for HTTP transport authentication (optional)
-  --page-id <id>         Restrict access to this page and its children (Notion page ID)
-  --page-url <url>       Restrict access to this page and its children (Notion page URL)
+  --page-id <ids>        Restrict access to these pages and their children (comma-separated page IDs)
+  --page-url <urls>      Restrict access to these pages and their children (comma-separated page URLs)
   --help, -h             Show this help message
 
 Environment Variables:
   NOTION_TOKEN           Notion integration token (recommended)
   OPENAPI_MCP_HEADERS    JSON string with Notion API headers (alternative)
   AUTH_TOKEN             Bearer token for HTTP transport authentication (alternative to --auth-token)
-  NOTION_ROOT_PAGE_ID    Root page ID for access control (alternative to --page-id)
-  NOTION_ROOT_PAGE_URL   Root page URL for access control (alternative to --page-url)
+  NOTION_ROOT_PAGE_ID    Root page IDs for access control (comma-separated, alternative to --page-id)
+  NOTION_ROOT_PAGE_URL   Root page URLs for access control (comma-separated, alternative to --page-url)
 
 Examples:
   notion-mcp-server                                    # Use stdio transport (default)
   notion-mcp-server --transport stdio                  # Use stdio transport explicitly
   notion-mcp-server --transport http                   # Use Streamable HTTP transport on port 3000
   notion-mcp-server --page-id "abc123"                 # Limit access to page abc123 and its children
+  notion-mcp-server --page-id "abc123,def456,ghi789"   # Limit access to multiple pages and their children
   notion-mcp-server --page-url "https://notion.so/xyz" # Limit access to page xyz and its children
+  notion-mcp-server --page-url "https://notion.so/page1,https://notion.so/page2" # Multiple page URLs
 `);
         process.exit(0);
       }
       // Ignore unrecognized arguments (like command name passed by Docker)
     }
 
-    return { transport: transport.toLowerCase(), port, authToken, pageId, pageUrl };
+    // Also check environment variables and merge with command line args
+    const envPageIds = process.env.NOTION_ROOT_PAGE_ID?.split(',').map(id => id.trim()).filter(id => id.length > 0) || [];
+    const envPageUrls = process.env.NOTION_ROOT_PAGE_URL?.split(',').map(url => url.trim()).filter(url => url.length > 0) || [];
+    
+    // Merge command line args with environment variables (command line takes precedence)
+    const finalPageIds = pageIds.length > 0 ? pageIds : envPageIds;
+    const finalPageUrls = pageUrls.length > 0 ? pageUrls : envPageUrls;
+
+    return { transport: transport.toLowerCase(), port, authToken, pageIds: finalPageIds, pageUrls: finalPageUrls };
   }
 
   const options = parseArgs()
@@ -80,8 +92,8 @@ Examples:
   if (transport === 'stdio') {
     // Use stdio transport (default)
     const proxy = await initProxy(specPath, baseUrl, { 
-      pageId: options.pageId, 
-      pageUrl: options.pageUrl 
+      pageIds: options.pageIds, 
+      pageUrls: options.pageUrls 
     })
     await proxy.connect(new StdioServerTransport())
     return proxy.getServer()
@@ -173,8 +185,8 @@ Examples:
           }
 
           const proxy = await initProxy(specPath, baseUrl, { 
-            pageId: options.pageId, 
-            pageUrl: options.pageUrl 
+            pageIds: options.pageIds, 
+            pageUrls: options.pageUrls 
           })
           await proxy.connect(transport)
         } else {
