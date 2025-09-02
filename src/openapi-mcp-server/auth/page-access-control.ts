@@ -107,27 +107,41 @@ export class PageAccessController {
   }
 
   /**
-   * Check if a page ID is allowed (is one of the root pages or descendant of any root page)
+   * Check if a resource ID is allowed (page, database, block, etc.)
    */
-  async isPageAllowed(pageId: string): Promise<boolean> {
+  async isPageAllowed(resourceId: string): Promise<boolean> {
     if (!this.isEnabled()) {
       return true // No access control, allow all
     }
 
-    const normalizedPageId = this.normalizePageId(pageId)
+    const normalizedResourceId = this.normalizePageId(resourceId)
     
     // Check if this is one of the root pages
-    if (this.rootPageIds.has(normalizedPageId)) {
+    if (this.rootPageIds.has(normalizedResourceId)) {
       return true
     }
 
     // Check cache first
-    if (this.pageCache.has(normalizedPageId)) {
-      return this.pageCache.get(normalizedPageId)!.isAllowed
+    if (this.pageCache.has(normalizedResourceId)) {
+      return this.pageCache.get(normalizedResourceId)!.isAllowed
     }
 
-    // Traverse up the page hierarchy to find any root page
-    return await this.checkPageHierarchy(normalizedPageId)
+    // Find the actual page ID for this resource
+    const actualPageId = await this.findRootPageForResource(normalizedResourceId)
+    
+    if (!actualPageId) {
+      // Cache as not allowed
+      this.pageCache.set(normalizedResourceId, { parentId: null, isAllowed: false })
+      return false
+    }
+
+    // Check if the actual page is allowed
+    const isAllowed = await this.checkPageHierarchy(actualPageId)
+    
+    // Cache the result for the original resource ID
+    this.pageCache.set(normalizedResourceId, { parentId: actualPageId, isAllowed })
+    
+    return isAllowed
   }
 
   /**
@@ -290,11 +304,73 @@ export class PageAccessController {
 
       if (dbData?.parent?.type === 'page_id') {
         return dbData.parent.page_id
+      } else if (dbData?.parent?.type === 'block_id') {
+        // Database is inside a block, resolve the block to its parent page
+        return await this.resolveBlockToPage(dbData.parent.block_id)
       }
       
       return null
     } catch (error) {
       console.error(`Error fetching database ${databaseId}:`, error)
+      return null
+    }
+  }
+
+  /**
+   * Find the root page for any type of resource (page, database, block, etc.)
+   */
+  private async findRootPageForResource(resourceId: string): Promise<string | null> {
+    try {
+      // First, try treating it as a page ID
+      try {
+        const operation = {
+          operationId: 'retrieve-a-page',
+          method: 'get',
+          path: '/v1/pages/{page_id}',
+          parameters: [
+            {
+              name: 'page_id',
+              in: 'path' as const,
+              required: true,
+              schema: { 
+                type: 'string' as const, 
+                format: 'uuid' 
+              }
+            }
+          ],
+          responses: {}
+        } as any
+
+        await this.httpClient.executeOperation(operation, { page_id: resourceId })
+        // If successful, it's a page ID
+        return resourceId
+      } catch (error: any) {
+        // If it fails, try other resource types
+      }
+
+      // Try treating it as a database ID
+      try {
+        const parentPageId = await this.getDatabaseParent(resourceId)
+        if (parentPageId) {
+          return parentPageId
+        }
+      } catch (error: any) {
+        // If it fails, try block ID
+      }
+
+      // Try treating it as a block ID
+      try {
+        const parentPageId = await this.resolveBlockToPage(resourceId)
+        if (parentPageId) {
+          return parentPageId
+        }
+      } catch (error: any) {
+        // All attempts failed
+      }
+
+      return null
+    } catch (error) {
+      console.error(`Error finding root page for resource ${resourceId}:`, error)
       return null
     }
   }
