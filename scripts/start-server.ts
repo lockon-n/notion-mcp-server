@@ -6,12 +6,12 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID, randomBytes } from 'node:crypto'
 import express from 'express'
 
-import { initProxy, ValidationError } from '../src/init-server'
+import { initProxy, ValidationError } from '../src/init-server.js'
 
 export async function startServer(args: string[] = process.argv) {
   const filename = fileURLToPath(import.meta.url)
   const directory = path.dirname(filename)
-  const specPath = path.resolve(directory, '../scripts/notion-openapi.json')
+  const specPath = path.resolve(directory, '../../scripts/notion-openapi.json')
   
   const baseUrl = process.env.BASE_URL ?? undefined
 
@@ -21,6 +21,8 @@ export async function startServer(args: string[] = process.argv) {
     let transport = 'stdio'; // default
     let port = 3000;
     let authToken: string | undefined;
+    let pageId: string | undefined;
+    let pageUrl: string | undefined;
 
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--transport' && i + 1 < args.length) {
@@ -32,6 +34,12 @@ export async function startServer(args: string[] = process.argv) {
       } else if (args[i] === '--auth-token' && i + 1 < args.length) {
         authToken = args[i + 1];
         i++; // skip next argument
+      } else if (args[i] === '--page-id' && i + 1 < args.length) {
+        pageId = args[i + 1];
+        i++; // skip next argument
+      } else if (args[i] === '--page-url' && i + 1 < args.length) {
+        pageUrl = args[i + 1];
+        i++; // skip next argument
       } else if (args[i] === '--help' || args[i] === '-h') {
         console.log(`
 Usage: notion-mcp-server [options]
@@ -40,27 +48,30 @@ Options:
   --transport <type>     Transport type: 'stdio' or 'http' (default: stdio)
   --port <number>        Port for HTTP server when using Streamable HTTP transport (default: 3000)
   --auth-token <token>   Bearer token for HTTP transport authentication (optional)
+  --page-id <id>         Restrict access to this page and its children (Notion page ID)
+  --page-url <url>       Restrict access to this page and its children (Notion page URL)
   --help, -h             Show this help message
 
 Environment Variables:
   NOTION_TOKEN           Notion integration token (recommended)
   OPENAPI_MCP_HEADERS    JSON string with Notion API headers (alternative)
   AUTH_TOKEN             Bearer token for HTTP transport authentication (alternative to --auth-token)
+  NOTION_ROOT_PAGE_ID    Root page ID for access control (alternative to --page-id)
+  NOTION_ROOT_PAGE_URL   Root page URL for access control (alternative to --page-url)
 
 Examples:
   notion-mcp-server                                    # Use stdio transport (default)
   notion-mcp-server --transport stdio                  # Use stdio transport explicitly
   notion-mcp-server --transport http                   # Use Streamable HTTP transport on port 3000
-  notion-mcp-server --transport http --port 8080       # Use Streamable HTTP transport on port 8080
-  notion-mcp-server --transport http --auth-token mytoken # Use Streamable HTTP transport with custom auth token
-  AUTH_TOKEN=mytoken notion-mcp-server --transport http # Use Streamable HTTP transport with auth token from env var
+  notion-mcp-server --page-id "abc123"                 # Limit access to page abc123 and its children
+  notion-mcp-server --page-url "https://notion.so/xyz" # Limit access to page xyz and its children
 `);
         process.exit(0);
       }
       // Ignore unrecognized arguments (like command name passed by Docker)
     }
 
-    return { transport: transport.toLowerCase(), port, authToken };
+    return { transport: transport.toLowerCase(), port, authToken, pageId, pageUrl };
   }
 
   const options = parseArgs()
@@ -68,7 +79,10 @@ Examples:
 
   if (transport === 'stdio') {
     // Use stdio transport (default)
-    const proxy = await initProxy(specPath, baseUrl)
+    const proxy = await initProxy(specPath, baseUrl, { 
+      pageId: options.pageId, 
+      pageUrl: options.pageUrl 
+    })
     await proxy.connect(new StdioServerTransport())
     return proxy.getServer()
   } else if (transport === 'http') {
@@ -158,7 +172,10 @@ Examples:
             }
           }
 
-          const proxy = await initProxy(specPath, baseUrl)
+          const proxy = await initProxy(specPath, baseUrl, { 
+            pageId: options.pageId, 
+            pageUrl: options.pageUrl 
+          })
           await proxy.connect(transport)
         } else {
           // Invalid request

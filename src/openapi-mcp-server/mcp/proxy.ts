@@ -1,10 +1,11 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, JSONRPCResponse, ListToolsRequestSchema, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { JSONSchema7 as IJsonSchema } from 'json-schema'
-import { OpenAPIToMCPConverter } from '../openapi/parser'
-import { HttpClient, HttpClientError } from '../client/http-client'
+import { OpenAPIToMCPConverter } from '../openapi/parser.js'
+import { HttpClient, HttpClientError } from '../client/http-client.js'
 import { OpenAPIV3 } from 'openapi-types'
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { PageAccessController } from '../auth/page-access-control.js'
 
 type PathItemObject = OpenAPIV3.PathItemObject & {
   get?: OpenAPIV3.OperationObject
@@ -23,14 +24,20 @@ type NewToolDefinition = {
   }>
 }
 
+export interface MCPProxyOptions {
+  pageId?: string
+  pageUrl?: string
+}
+
 // import this class, extend and return server
 export class MCPProxy {
   private server: Server
   private httpClient: HttpClient
   private tools: Record<string, NewToolDefinition>
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>
+  private pageAccessController: PageAccessController | null = null
 
-  constructor(name: string, openApiSpec: OpenAPIV3.Document) {
+  constructor(name: string, openApiSpec: OpenAPIV3.Document, options: MCPProxyOptions = {}) {
     this.server = new Server({ name, version: '1.0.0' }, { capabilities: { tools: {} } })
     const baseUrl = openApiSpec.servers?.[0].url
     if (!baseUrl) {
@@ -43,6 +50,15 @@ export class MCPProxy {
       },
       openApiSpec,
     )
+
+    // Initialize page access control if needed
+    if (options.pageId || options.pageUrl) {
+      this.pageAccessController = new PageAccessController({
+        pageId: options.pageId,
+        pageUrl: options.pageUrl,
+        httpClient: this.httpClient
+      })
+    }
 
     // Convert OpenAPI spec to MCP tools
     const converter = new OpenAPIToMCPConverter(openApiSpec)
@@ -84,6 +100,28 @@ export class MCPProxy {
         throw new Error(`Method ${name} not found`)
       }
 
+      // Check page access control if enabled
+      if (this.pageAccessController && this.pageAccessController.isEnabled()) {
+        try {
+          await this.validatePageAccess(operation, params || {})
+        } catch (error) {
+          console.error('Page access control violation:', error)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'error',
+                  error: 'Access denied',
+                  message: `You don't have permission to access this resource. Access is restricted to the configured root page and its children.`,
+                  details: error instanceof Error ? error.message : 'Page access control violation'
+                }),
+              },
+            ],
+          }
+        }
+      }
+
       try {
         // Execute the operation
         const response = await this.httpClient.executeOperation(operation, params)
@@ -121,6 +159,28 @@ export class MCPProxy {
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
     return this.openApiLookup[operationId] ?? null
+  }
+
+  private async validatePageAccess(operation: OpenAPIV3.OperationObject & { method: string; path: string }, params: Record<string, any>): Promise<void> {
+    if (!this.pageAccessController) {
+      return
+    }
+
+    // Extract the page ID that this operation will affect
+    const targetPageId = this.pageAccessController.extractPageIdFromRequest(operation.path, params)
+    
+    if (!targetPageId) {
+      // If we can't determine the page ID, allow the request
+      // This covers operations like search or user management
+      return
+    }
+
+    // Check if the target page is allowed
+    const isAllowed = await this.pageAccessController.isPageAllowed(targetPageId)
+    
+    if (!isAllowed) {
+      throw new Error(`Access denied to page ${targetPageId}. Only pages under the configured root page are accessible.`)
+    }
   }
 
   private parseHeadersFromEnv(): Record<string, string> {
